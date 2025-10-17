@@ -1,6 +1,6 @@
 from pydantic import BaseModel, EmailStr, ConfigDict, Field, field_validator
 from typing import List
-from app.database.schema import ClientRoleEnum
+from schema.schema import ClientRoleEnum
 from app.constants.content_type import ALLOWED_EXTENSIONS
 import os
 

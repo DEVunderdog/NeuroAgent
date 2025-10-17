@@ -2,7 +2,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from pydantic import EmailStr
-from app.database.schema import User, ApiKey, ClientRoleEnum
+from schema.schema import User, ApiKey, ClientRoleEnum
 from app.models.database import UserClientCreate, ApiKeyCreate
 from typing import Tuple, List
 import psycopg

@@ -3,7 +3,7 @@ from app.database.user import register_user, UserAlreadyExistsError
 from app.api.deps import TokenDep, SessionDep, TokenPayloadDep
 from app.models.api import RegisterUser, StandardResponse, ListUsers
 from app.models.database import UserClientCreate, ApiKeyCreate
-from app.database.schema import ClientRoleEnum
+from schema.schema import ClientRoleEnum
 from app.token.token_manager import KeyNotFoundError
 from app.mail.send_mail import send_api_mail
 from app.utils.config import settings

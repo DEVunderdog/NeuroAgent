@@ -4,7 +4,7 @@ from sqlalchemy import insert, update, case, cast, select, delete, not_, and_
 from sqlalchemy.sql import func
 from typing import List, Tuple
 from app.models.database import CreateDocument
-from app.database.schema import OperationStatusEnum, DocumentRegistry
+from schema.schema import OperationStatusEnum, DocumentRegistry
 import logging
 
 logger = logging.getLogger(__name__)

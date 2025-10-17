@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from app.database.schema import ClientRoleEnum
+from schema.schema import ClientRoleEnum
 
 class PayloadData(BaseModel):
     user_id: int
