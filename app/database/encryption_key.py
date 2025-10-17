@@ -1,5 +1,5 @@
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.database.schema import EncryptionKey
+from schema.schema import EncryptionKey
 from sqlalchemy import select
 
 

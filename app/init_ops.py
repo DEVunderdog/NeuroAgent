@@ -10,7 +10,7 @@ from app.database.connection import SessionLocal, engine
 from app.database.user import get_user_db, register_user
 from app.token.token_manager import TokenManager, KeyNotFoundError
 from app.models.database import UserClientCreate, ApiKeyCreate
-from app.database.schema import ClientRoleEnum
+from schema.schema import ClientRoleEnum
 from app.mail.send_mail import send_api_mail
 
 

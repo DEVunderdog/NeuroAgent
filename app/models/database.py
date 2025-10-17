@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from app.database.schema import ClientRoleEnum
+from schema.schema import ClientRoleEnum
 from app.models.api import UserClientBase
 
 

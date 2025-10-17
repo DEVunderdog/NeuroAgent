@@ -2,7 +2,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 from sqlalchemy import select
 from app.models.database import VerifiedApiKey, StoreApiKey
-from app.database.schema import User, ApiKey
+from schema.schema import User, ApiKey
 from typing import Tuple
 
 
