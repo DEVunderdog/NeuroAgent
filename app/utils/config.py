@@ -54,6 +54,9 @@ class Settings(BaseSettings):
     AWS_SECRET_ACCESS_KEY: Optional[str]
     AWS_BUCKET_NAME: str
     AWS_PRESIGNED_URL_EXP: int
+    AWS_QUEUE_URL: str
+    AWS_VECTOR_BUCKET_NAME:str
+    AWS_VECTOR_BUCKET_ARN: str
 
     JWT_ACCESS_TOKEN_HOURS: int
     JWT_ISSUER: str

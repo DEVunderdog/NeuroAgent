@@ -1,10 +1,17 @@
+import json
 import boto3
 import logging
 import os
 from botocore.exceptions import ClientError, BotoCoreError, NoCredentialsError
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from app.utils.config import Settings
 from app.constants.content_type import S3_CONTENT_TYPE_MAP
+from app.models.aws import (
+    SqsMessage,
+    CreateVectorIndexParams,
+    DeleteVectorIndexParams,
+    QueryVectorsParams,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +44,26 @@ class FileNotSupported(S3OperationError):
     pass
 
 
+class SqsOperationError(Exception):
+    def __init__(
+        self,
+        message: str,
+        error_code: Optional[str] = None,
+        queue_name: Optional[str] = None,
+    ):
+        self.error_code = error_code
+        self.queue_name = queue_name
+        super().__init__(message)
+
+
+class SqsConfigurationError(SqsOperationError):
+    pass
+
+
+class SqsMessageError(SqsOperationError):
+    pass
+
+
 class AwsClientManager:
     def __init__(self, settings: Settings):
         self.settings = settings
@@ -47,12 +74,28 @@ class AwsClientManager:
         )
         self.session = boto3.Session(**self.session_kwargs)
         self._s3_client = None
+        self._sqs_client = None
+        self._s3_vectors_client = None
 
     @property
     def s3(self):
         if self._s3_client is None:
             self._s3_client = self.session.client("s3")
         return self._s3_client
+
+    @property
+    def sqs(self):
+        if self._sqs_client is None:
+            self._sqs_client = self.session.client(
+                "sqs", region_name=self.settings.AWS_REGION
+            )
+        return self._sqs_client
+
+    @property
+    def s3_vectors(self):
+        if self._s3_vectors_client is None:
+            self._s3_vectors_client = self.session.client("s3vectors")
+        return self._s3_vectors_client
 
     def _handle_client_error(
         self, error: ClientError, operation: str, object_key: Optional[str] = None
@@ -211,14 +254,118 @@ class AwsClientManager:
                 object_key=object_key,
             )
 
-    def download_file(self, object_key: str, temp_file_path: str):
+    def _format_message_attributes(
+        self, attributes: Dict[str, any]
+    ) -> Dict[str, Dict[str, str]]:
+        formatted = {}
+
+        for key, value in attributes.items():
+            if isinstance(value, str):
+                formatted[key] = {"StringValue": value, "DataType": "String"}
+            elif isinstance(value, (int, float)):
+                formatted[key] = {"StringValue": str(value), "DataType": "String"}
+            elif (
+                isinstance(value, dict)
+                and "StringValue" in value
+                and "DataType" in value
+            ):
+                formatted[key] = value
+            else:
+                formatted[key] = {
+                    "StringValue": json.dumps(value),
+                    "DataType": "String",
+                }
+
+        return formatted
+
+    def send_sqs_message(
+        self,
+        message_body: SqsMessage,
+        message_attributes: Optional[Dict[str, Any]] = None,
+    ):
         try:
-            self.s3.download_file(
-                self.settings.AWS_BUCKET_NAME, object_key, temp_file_path
-            )
-            logger.debug(f"download the file: {object_key}")
+            body = message_body.model_dump_json()
+            params = {"QueueUrl": self.settings.AWS_QUEUE_URL, "MessageBody": body}
+
+            if message_attributes:
+                params["MessageAttributes"] = self._format_message_attributes(
+                    message_attributes
+                )
+
+            self.sqs.send_message(**params)
         except ClientError as e:
-            logger.error("error downloading file", extra={"error": str(e)})
-            raise S3OperationError(
-                f"error downloading file: {str(e)}", object_key=object_key
+            error_code = e.response.get("Error", {}).get("Code", "Unknown")
+            error_message = e.response.get("Error", {}).get("Message", str(e))
+
+            logger.error(f"failed to send message: {error_message}")
+            raise SqsMessageError(
+                f"failed to send message: {error_message}", error_code=error_code
             )
+        except Exception as e:
+            logger.error("unexpected error sending message", exc_info=True)
+            raise SqsMessageError(f"unexpected error: {e}")
+
+    def create_vector_index(self, args: CreateVectorIndexParams):
+        try:
+            self.s3_vectors.create_index(
+                vectorBucketArn=args.vector_bucket_arn,
+                indexName=args.index_name,
+                dataType="float32",
+                dimension=args.dimension,
+                distanceMetric="cosine",
+                metadataConfiguration={
+                    "nonFilterableMetadataKeys": args.non_filterable_metadata
+                },
+            )
+        except Exception as e:
+            logger.error(f"unexpected error creating vector index: {e}")
+            raise
+
+    def delete_vector_index(self, args: DeleteVectorIndexParams):
+        try:
+            self.s3_vectors.delete_index(
+                vectorBucketName=args.vector_bucket_name,
+                indexArn=args.index_arn,
+            )
+        except Exception as e:
+            logger.error(f"unexpected error while deleting vector index: {e}")
+            raise
+
+    def query_vectors(self, args: QueryVectorsParams):
+        try:
+            response = self.s3_vectors.query_vectors(
+                vectorBucketName=args.vector_bucket_name,
+                indexArn=args.index_arn,
+                topK=args.topK,
+                queryVector={"float32": args.query_vector},
+                returnMetadata=True,
+                returnDistance=True,
+            )
+            return response
+        except Exception as e:
+            logger.error(f"unexpected error while querying vectors: {e}")
+            raise
+
+    def list_vector_indexes_count(
+        self, vector_bucket_arn: str, max_items: int, page_size: int
+    ):
+        try:
+            paginator = self.s3_vectors.get_paginator("list_indexes")
+            page_iterator = paginator.paginate(
+                vectorBucketArn=vector_bucket_arn,
+                PaginationConfig={
+                    "MaxItems": max_items,
+                    "PageSize": page_size,
+                },
+            )
+
+            index_count = 0
+
+            for page in page_iterator:
+                for index in page.get("indexes", []):
+                    index_count += 1
+
+            return index_count
+        except Exception as e:
+            logger.error(f"error listing indexes: {e}")
+            raise

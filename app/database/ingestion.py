@@ -1,0 +1,147 @@
+import logging
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy import select, insert
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from typing import List
+from app.models.database import CreatedIngestionJob
+from app.models.aws import FileForIngestion
+from schema.schema import (
+    VectorIndex,
+    KnowledgeBase,
+    DocumentRegistry,
+    IngestionJob,
+    OperationStatusEnum,
+    KnowledgeBaseDocument,
+)
+
+
+logger = logging.getLogger(__name__)
+
+
+class KnowledgebaseNotFound(Exception):
+    pass
+
+
+class DocsNotFound(Exception):
+    def __init__(self, missing_ids):
+        self.missing_ids = missing_ids
+        super().__init__(f"documents not found: {missing_ids}")
+
+
+async def create_ingestion_job(
+    *, db: AsyncSession, document_ids: List[int], kb_id: int, user_id: int
+) -> CreatedIngestionJob:
+    try:
+        kb_stmt = (
+            select(VectorIndex.index_arn)
+            .join(VectorIndex, KnowledgeBase.index_id == VectorIndex.id)
+            .where(KnowledgeBase.id == kb_id)
+            .where(KnowledgeBase.user_id == user_id)
+        )
+
+        result = await db.execute(kb_stmt)
+        knowledge_base_result = result.first()
+
+        if knowledge_base_result is None:
+            raise KnowledgebaseNotFound(
+                f"knowledge base with id={kb_id} with user={user_id} not found"
+            )
+
+        existing_docs = await db.execute(
+            select(
+                DocumentRegistry.id,
+                DocumentRegistry.file_name,
+                DocumentRegistry.object_key,
+            ).where(DocumentRegistry.id.in_(document_ids))
+        )
+
+        existing_data = {
+            row.id: {"file_name": row.file_name, "object_key": row.object_key}
+            for row in existing_docs
+        }
+
+        missing_ids = set(document_ids) - set(existing_docs.keys())
+
+        if missing_ids:
+            raise DocsNotFound(missing_ids=missing_ids)
+
+        ingestion_job_id = (
+            await db.execute(
+                insert(IngestionJob)
+                .values(
+                    kb_id=kb_id,
+                    op_status=OperationStatusEnum.PENDING,
+                )
+                .returning(IngestionJob.id)
+            )
+        ).scalar_one()
+
+        kb_doc_pairs = [(kb_id, doc_id) for doc_id in document_ids]
+
+        stmt = (
+            pg_insert(KnowledgeBaseDocument)
+            .values(
+                [
+                    {
+                        "knowledge_base_id": kb_id,
+                        "document_id": doc_id,
+                        "status": OperationStatusEnum.PENDING,
+                    }
+                    for kb_id, doc_id in kb_doc_pairs
+                ]
+            )
+            .on_conflict_do_update(
+                index_elements=["knowledge_base_id", "document_id"],
+                set_={"status": OperationStatusEnum.PENDING},
+            )
+        ).returning(
+            KnowledgeBaseDocument.id,
+            KnowledgeBaseDocument.document_id,
+        )
+
+        kb_doc_upsert_result = await db.execute(stmt)
+
+        kb_doc_ids_rows = kb_doc_upsert_result.mappings().all()
+
+        file_for_ingestion: List[FileForIngestion] = []
+
+        for row in kb_doc_ids_rows:
+            if row.document_id in existing_data:
+                file_for_ingestion.append(
+                    FileForIngestion(
+                        kb_doc_id=row.id,
+                        doc_id=row.document_id,
+                        file_name=existing_data[row.document_id]["file_name"],
+                        object_key=existing_data[row.document_id]["object_key"],
+                    )
+                )
+
+        return CreatedIngestionJob(
+            ingestion_id=ingestion_job_id,
+            index_arn=knowledge_base_result.index_arn,
+            kb_id=kb_id,
+            user_id=user_id,
+            documents=file_for_ingestion,
+        )
+
+    except (KnowledgebaseNotFound, SQLAlchemyError) as e:
+        await db.rollback()
+        logger.error(
+            f"Error during ingestion job creation for kb_id={kb_id}: {e}",
+            exc_info=True,
+        )
+        raise
+
+    except DocsNotFound as e:
+        await db.rollback()
+        logger.error(f"we cannot find the following documents: {e}")
+        raise
+
+    except Exception as e:
+        await db.rollback()
+        logger.error(
+            f"Unexpected error during ingestion job creation for kb_id={kb_id}: {e}",
+            exc_info=True,
+        )
+        raise

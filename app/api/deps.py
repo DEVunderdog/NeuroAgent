@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.token import TokenData, ApiData
 from app.database.api_key import get_api_key_for_verification
 from app.aws.client import AwsClientManager
+from app.provisioner.manager import ProvisionManager
 
 oauth2_scheme = HTTPBearer(auto_error=False)
 
@@ -36,9 +37,16 @@ def get_token_manager(request: Request) -> TokenManager:
     return request.app.state.token_manager
 
 
+def get_provision_manager(request: Request) -> ProvisionManager:
+    if not hasattr(request.app.state, "provision_manager"):
+        raise RuntimeError("ProvisionManager not initialized, check lifespan events")
+    return request.app.state.provision_manager
+
+
 TokenDep = Annotated[TokenManager, Depends(get_token_manager)]
 SessionDep = Annotated[AsyncSession, Depends(get_db)]
 AwsDep = Annotated[AwsClientManager, Depends(get_aws_client_manager)]
+ProvisionerDep = Annotated[ProvisionManager, Depends(get_provision_manager)]
 
 
 async def get_token_payload(
