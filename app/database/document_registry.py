@@ -4,10 +4,16 @@ from sqlalchemy import insert, update, case, cast, select, delete, not_, and_
 from sqlalchemy.sql import func
 from typing import List, Tuple
 from app.models.database import CreateDocument
-from schema.schema import OperationStatusEnum, DocumentRegistry
+from schema.schema import OperationStatusEnum, DocumentRegistry, KnowledgeBaseDocument
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+class DocumentInKnowledgeBaseError(Exception):
+    def __init__(self, message: str):
+        self.message = message
+        super().__init__(self.message)
 
 
 async def create_document(
@@ -174,4 +180,44 @@ async def cleanup_docs(
     except Exception as e:
         await db.rollback()
         logger.error(f"error cleaning up docs in database: {e}")
+        raise
+
+
+async def lock_documents(
+    *,
+    db: AsyncSession,
+    document_ids: List[int],
+    user_id: int,
+    for_deletion: bool = True,
+) -> List[str]:
+    try:
+        query = select(KnowledgeBaseDocument.document_id).where(
+            KnowledgeBaseDocument.document_id.in_(document_ids)
+        )
+        result = await db.execute(query)
+        existing_docs = result.scalars().all()
+
+        if for_deletion and existing_docs:
+            raise DocumentInKnowledgeBaseError(
+                f"document with IDs {existing_docs} are in knowledge base"
+            )
+
+        stmt = (
+            update(DocumentRegistry)
+            .where(
+                not DocumentRegistry.lock_status,
+                DocumentRegistry.id.in_(document_ids),
+                DocumentRegistry.op_status == OperationStatusEnum.SUCCESS,
+                DocumentRegistry.user_id == user_id,
+            )
+            .values(lock_status=True, op_status=OperationStatusEnum.PENDING)
+            .returning(DocumentRegistry.object_key)
+        )
+        result = await db.execute(stmt)
+        object_keys = [row.object_key for row in result.fetchall()]
+        await db.commit()
+        return object_keys
+    except Exception as e:
+        await db.rollback()
+        logger.error(f"error locking the documents: {str(e)}")
         raise

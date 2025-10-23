@@ -16,6 +16,9 @@ from app.database.document_registry import (
     create_document,
     finalize_documents,
     list_files,
+    lock_documents,
+    DocumentInKnowledgeBaseError,
+    delete_documents,
 )
 from app.aws.client import FileNotSupported, ClientError
 
@@ -156,3 +159,54 @@ async def list_documents(
             detail="error listing documents",
         )
 
+
+@router.delete(
+    "/delete/{file_id}",
+    response_model=StandardResponse,
+    status_code=status.HTTP_200_OK,
+    summary="delete documents",
+)
+async def delete_file(
+    db: SessionDep, payload: TokenPayloadDep, aws_client: AwsDep, file_id: int
+):
+    if file_id == 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="please provide valid file id to delete",
+        )
+
+    ids = [file_id]
+    try:
+        object_keys = await lock_documents(
+            db=db, document_ids=ids, user_id=payload.user_id
+        )
+
+        if len(object_keys) == 0:
+            msg = "non documents found"
+            logger.info(msg)
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=msg)
+
+        aws_client.multiple_delete_objects(object_keys=object_keys)
+
+        await delete_documents(db=db, document_ids=ids, user_id=payload.user_id)
+
+    except DocumentInKnowledgeBaseError:
+        msg = "cannot delete file: it is currently part of knowledge base"
+        logger.warning(f"{msg} FILE ID: {file_id}")
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=msg,
+        )
+
+    except HTTPException:
+        raise
+
+    except Exception as e:
+        msg = f"error deleting documents, please sync up: {str(e)}"
+        logger.error(msg)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=msg,
+        )
+    
+    return StandardResponse(message="successfully deleted files")

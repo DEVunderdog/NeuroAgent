@@ -2,6 +2,7 @@ from pydantic import BaseModel, EmailStr, ConfigDict, Field, field_validator
 from typing import List
 from schema.schema import ClientRoleEnum
 from app.constants.content_type import ALLOWED_EXTENSIONS
+from app.models.database import ListedKbDocs
 import os
 
 
@@ -101,3 +102,39 @@ class ListDocuments(StandardResponse):
     class Config:
         from_attributes = True
 
+
+class PoolStats(StandardResponse):
+    available_count: int
+    provisioning_count: int
+    failed_count: int
+    destroyed_count: int
+    cleanup_count: int
+
+
+class KnowledgeBaseReq(BaseModel):
+    name: str
+
+
+class KnowledgeBaseResp(StandardResponse):
+    kb_id: int
+
+
+class KnowledgeBase(BaseModel):
+    id: int
+    name: str
+
+
+class ListKnowledgeBaseResp(StandardResponse):
+    kb: List[KnowledgeBase]
+    total_count: int
+
+
+class ListedKbDocResp(StandardResponse, ListedKbDocs):
+    pass
+
+class IngestionJobCreationResponse(StandardResponse):
+    ingestion_job_id: int
+
+class IngestionRequest(BaseModel):
+    kb_id: int
+    file_ids: List[int]
